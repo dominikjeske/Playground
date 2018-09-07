@@ -8,8 +8,10 @@ namespace RoslynTest
     {
         private static async Task Main(string[] args)
         {
+            // Runtime
             await ProtoCluster.Start();
 
+            // Debug
             //await GenerateDebuging().ConfigureAwait(false);
 
             Console.ReadLine();
