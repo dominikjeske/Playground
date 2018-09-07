@@ -9,6 +9,7 @@ namespace RoslynTest
         public static async Task Start()
         {
             var context = new RootContext();
+            // Using generated proxy of Device
             var props = Props.FromProducer(() => new DeviceProxy());
             var pid = context.Spawn(props);
 
