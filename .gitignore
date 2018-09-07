@@ -2,4 +2,8 @@
 # This .gitignore file was automatically created by Microsoft(R) Visual Studio.
 ################################################################################
 
-/Roslyn/.vs/RoslynTest/v15
+.vs/
+bin/
+obj/
+Debug/
+Release/
