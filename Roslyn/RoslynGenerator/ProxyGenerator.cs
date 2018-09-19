@@ -1,4 +1,5 @@
-﻿using Microsoft.CodeAnalysis;
+﻿using CodeGeneration.Roslyn;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.Collections.Generic;
@@ -11,31 +12,52 @@ namespace RoslynGenerator
     {
         public ClassDeclarationSyntax GenerateProxy(ClassDeclarationSyntax classSyntax, SemanticModel model)
         {
-            var classSemantic = model.GetDeclaredSymbol(classSyntax);
-            var classDeclaration = ClassDeclaration($"{classSemantic.Name}Proxy");
+            try
+            {
+                var classSemantic = model.GetDeclaredSymbol(classSyntax);
+                var classDeclaration = ClassDeclaration($"{classSemantic.Name}Proxy");
 
-            classDeclaration = classDeclaration.AddModifiers(classSyntax.Modifiers.ToArray())
-                                               .WithBaseList(BaseList(SingletonSeparatedList<BaseTypeSyntax>(SimpleBaseType(IdentifierName(classSemantic.Name)))));
+                classDeclaration = classDeclaration.AddModifiers(classSyntax.Modifiers.ToArray())
+                                                   .WithBaseList(BaseList(SingletonSeparatedList<BaseTypeSyntax>(SimpleBaseType(IdentifierName(classSemantic.Name)))));
 
-            var methodDeclaration = MethodDeclaration(ParseTypeName("Task"), "ReceiveAsync")
-                                   .WithModifiers(TokenList(new[] { Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.AsyncKeyword), Token(SyntaxKind.OverrideKeyword) }))
-                                   .AddParameterListParameters(Parameter(new SyntaxList<AttributeListSyntax>(), new SyntaxTokenList(), IdentifierName(Identifier("IContext")), Identifier("context"), null))
-                                   .WithBody(Block(
-                                       LocalDeclarationStatement(VariableDeclaration(IdentifierName("var")).WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("msg")).WithInitializer(EqualsValueClause(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("context"), IdentifierName("Message"))))))),
-                                       GenerateActorStartedHandler(),
-                                       GenerateCommandHandlers(classSyntax, model),
-                                       GenerateQueryHandlers(classSyntax, model),
-                                       GetUnsupportedThrow())
-                                    );
+                var methodDeclaration = MethodDeclaration(ParseTypeName("Task"), "ReceiveAsync")
+                                       .WithModifiers(TokenList(new[] { Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.AsyncKeyword), Token(SyntaxKind.OverrideKeyword) }))
+                                       .WithParameterList(ParameterList(SingletonSeparatedList(Parameter(Identifier("context")).WithType(QualifiedName(IdentifierName("Proto"), IdentifierName("IContext"))))))
+                                       .WithBody(Block(
+                                           GenerateSystemMessagesHandler(),
+                                           LocalDeclarationStatement(VariableDeclaration(IdentifierName("var")).WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("msg")).WithInitializer(EqualsValueClause(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("context"), IdentifierName("Message"))))))),
+                                           FillContextData(),
+                                           GenerateCommandHandlers(classSyntax, model),
+                                           GenerateQueryHandlers(classSyntax, model),
+                                           GetUnsupportedThrow())
+                                        );
 
-            classDeclaration = classDeclaration.AddMembers(methodDeclaration);
+                classDeclaration = classDeclaration.AddMembers(methodDeclaration);
 
-            return classDeclaration;
+                return classDeclaration;
+            }
+            catch (System.Exception e)
+            {
+                Logger.Error(e.ToString(), "");
+            }
+
+            return ClassDeclaration($"Error");
+
         }
 
-        private StatementSyntax GenerateActorStartedHandler()
+        public StatementSyntax GenerateSystemMessagesHandler()
         {
-            return IfStatement(BinaryExpression(SyntaxKind.IsExpression, IdentifierName("msg"), IdentifierName("Started")), ReturnStatement());
+            return IfStatement(AwaitExpression(InvocationExpression(IdentifierName("HandleSystemMessages")).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(IdentifierName("context")))))), ReturnStatement());
+        }
+
+        public StatementSyntax FillContextData()
+        {
+            return IfStatement(IsPatternExpression(IdentifierName("msg"), DeclarationPattern(IdentifierName("IExecutionContext"), SingleVariableDesignation(Identifier("ic")))), Block(SingletonList<StatementSyntax>(ExpressionStatement(AssignmentExpression(SyntaxKind.SimpleAssignmentExpression, MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("ic"), IdentifierName("Context")), IdentifierName("context"))))));
+        }
+
+        private StatementSyntax GetQueryInvocationBody(string handlerName, string paramName)
+        {
+            return Block(LocalDeclarationStatement(VariableDeclaration(IdentifierName("var")).WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("result")).WithInitializer(EqualsValueClause(AwaitExpression(InvocationExpression(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, InvocationExpression(IdentifierName(handlerName)).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(IdentifierName(paramName))))), IdentifierName("ConfigureAwait"))).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(LiteralExpression(SyntaxKind.FalseLiteralExpression))))))))))), ExpressionStatement(InvocationExpression(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("context"), IdentifierName("Respond"))).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(IdentifierName("result")))))), ReturnStatement());
         }
 
         private StatementSyntax GenerateCommandHandlers(ClassDeclarationSyntax classSyntax, SemanticModel model)
@@ -44,14 +66,20 @@ namespace RoslynGenerator
 
             var methods = GetMethodList(classSyntax, model, "Command");
 
-            var ifStatement = GetIfCommand(ref param_num, methods[0]);
-
-            foreach (var method in methods.Skip(1))
+            if (methods.Count > 0)
             {
-                ifStatement = ifStatement.WithElse(ElseClause(GetIfCommand(ref param_num, method)));
+
+                var ifStatement = GetIfCommand(ref param_num, methods[0]);
+
+                foreach (var method in methods.Skip(1))
+                {
+                    ifStatement = ifStatement.WithElse(ElseClause(GetIfCommand(ref param_num, method)));
+                }
+
+                return ifStatement;
             }
 
-            return ifStatement;
+            return EmptyStatement();
         }
 
         private IfStatementSyntax GetIfCommand(ref int param_num, MethodDescription method)
@@ -64,14 +92,19 @@ namespace RoslynGenerator
             int param_num = 0;
             var methods = GetMethodList(classSyntax, model, "Query");
 
-            var ifStatement = GetIfQuery(ref param_num, methods[0]);
-
-            foreach (var method in methods.Skip(1))
+            if (methods.Count > 0)
             {
-                ifStatement = ifStatement.WithElse(ElseClause(GetIfQuery(ref param_num, method)));
-            }
+                var ifStatement = GetIfQuery(ref param_num, methods[0]);
 
-            return ifStatement;
+                foreach (var method in methods.Skip(1))
+                {
+                    ifStatement = ifStatement.WithElse(ElseClause(GetIfQuery(ref param_num, method)));
+                }
+
+                return ifStatement;
+            }
+            
+            return EmptyStatement();
         }
 
         private IfStatementSyntax GetIfQuery(ref int param_num, MethodDescription method)
@@ -81,11 +114,18 @@ namespace RoslynGenerator
 
         private static List<MethodDescription> GetMethodList(ClassDeclarationSyntax classSyntax, SemanticModel model, string parameterType)
         {
+            foreach(var x in  classSyntax.DescendantNodes()
+                                     .OfType<MethodDeclarationSyntax>()
+                                     .Where(m => m.ParameterList.Parameters.Count == 1))
+            {
+                var test = model.GetDeclaredSymbol(x.ParameterList.Parameters.FirstOrDefault());
+            }
+
             return classSyntax.DescendantNodes()
                                      .OfType<MethodDeclarationSyntax>()
                                      .Where(m => m.ParameterList.Parameters.Count == 1)
                                      .Select(c => new MethodDescription { Method = c, Parameter = model.GetDeclaredSymbol(c.ParameterList.Parameters.FirstOrDefault()) })
-                                     .Where(x => x.Parameter.Type.BaseType.Name == parameterType)
+                                     .Where(x => x.Parameter.Type.BaseType?.Name == parameterType)
                                      .ToList();
         }
 
@@ -97,11 +137,6 @@ namespace RoslynGenerator
         private StatementSyntax GetCommandInvocationBody(string handlerName, string paramName)
         {
             return Block(ExpressionStatement(AwaitExpression(InvocationExpression(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, InvocationExpression(IdentifierName(handlerName)).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(IdentifierName(paramName))))), IdentifierName("ConfigureAwait"))).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(LiteralExpression(SyntaxKind.FalseLiteralExpression))))))), ReturnStatement());
-        }
-
-        private StatementSyntax GetQueryInvocationBody(string handlerName, string paramName)
-        {
-            return Block(LocalDeclarationStatement(VariableDeclaration(IdentifierName("var")).WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("result")).WithInitializer(EqualsValueClause(AwaitExpression(InvocationExpression(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, InvocationExpression(IdentifierName(handlerName)).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(IdentifierName(paramName))))), IdentifierName("ConfigureAwait"))).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(LiteralExpression(SyntaxKind.FalseLiteralExpression))))))))))), ExpressionStatement(InvocationExpression(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("context"), IdentifierName("Respond"))).WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(IdentifierName("result")))))), ReturnStatement());
         }
 
         private class MethodDescription

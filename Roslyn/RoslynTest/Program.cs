@@ -1,15 +1,21 @@
-﻿using RoslynGenerator;
+﻿using Proto;
+using Proto.Router;
+using RoslynGenerator;
 using System;
+using System.IO;
+using System.Reflection;
 using System.Threading.Tasks;
 
 namespace RoslynTest
 {
-    internal class Program
+    internal static class Program
     {
         private static async Task Main(string[] args)
         {
             // Runtime
-            await ProtoCluster.Start();
+            //await ProtoCluster.Start();
+
+            await ProtoTest.Start();
 
             // Debug
             //await GenerateDebuging().ConfigureAwait(false);
@@ -19,74 +25,16 @@ namespace RoslynTest
 
         private static async Task GenerateDebuging()
         {
-            var code =
-                        @"  using System;
-
-                namespace HomeCenter
-                {
-                        public class Actor : IActor
-                        {
-                            public virtual Task ReceiveAsync(IContext context)
-                            {
-                                return Task.CompletedTask;
-                            }
-                        }
-
-                        public class Command
-                        {
-                        }
-
-                        public class TurnOnCommand : Command
-                        {
-                        }
-
-                        public class TurnOffCommand : Command
-                        {
-                        }
-
-                        public class Query
-                        {
-                        }
-
-                        public class QueryCapabilities : Query
-                        {
-                        }
-
-                        public class QueryStuff : Query
-                        {
-                        }
-
-                        public class Result
-                        {
-                        }
-
-                        internal class Device : Actor
-                        {
-                            protected Task Invoke(TurnOnCommand command)
-                            {
-                                return Task.CompletedTask;
-                            }
-
-                            protected Task Invoke(TurnOffCommand command)
-                            {
-                                return Task.CompletedTask;
-                            }
-
-                            protected Task<int> Get(QueryCapabilities command)
-                            {
-                                return Task.FromResult(1);
-                            }
-
-                            protected Task<Result> Get(QueryStuff command)
-                            {
-                                return Task.FromResult(new Result());
-                            }
-                        }
-                }";
-
             try
             {
-                var result = await new ProxyGeneratorTest().Generate(code);
+                var code = await File.ReadAllTextAsync(@"..\..\..\Models.cs").ConfigureAwait(false);
+
+                var externalRefs = new Assembly[] { typeof(IContext).Assembly, typeof(Proto.Mailbox.UnboundedMailbox).Assembly, typeof(Router).Assembly };
+
+                var result = await new ProxyGeneratorTest().Generate(code, externalRefs).ConfigureAwait(false);
+
+                Console.ReadLine();
+
                 Console.WriteLine(result);
             }
             catch (Exception e)
@@ -94,5 +42,6 @@ namespace RoslynTest
                 Console.WriteLine(e);
             }
         }
+
     }
 }
